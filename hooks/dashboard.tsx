@@ -23,6 +23,7 @@ export type Snapshot = {
   collapsed: string[]
   history: number[]
   selected: string
+  sync: { requestedAt: number; doneAt: number }
   spawns: Record<string, DashAgentDetail>
   now: number
   width: number
@@ -33,6 +34,7 @@ type Ui = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button' | 'Code' | 'Markd
 export type Handlers = {
   toggle: (id: string) => void
   select: (ref: string) => void
+  refresh: () => void
 }
 
 // A widget is one titled card: add an entry to WIDGETS and it shows up.
@@ -296,12 +298,18 @@ function pill(ui: Ui, n: number, noun: string, color: string) {
   )
 }
 
-function header(s: Snapshot, ui: Ui) {
-  const { Box, Text } = ui
+function header(s: Snapshot, ui: Ui, acts: Handlers) {
+  const { Box, Text, Button } = ui
   const live = liveCount(s)
   const shells = s.tasks.filter(t => t.status === 'running').length
   const agents = s.agents.filter(isAgentLive).length
   const peak = Math.max(0, ...s.history)
+  const isSyncing = s.sync.requestedAt > s.sync.doneAt && s.now - s.sync.requestedAt < 30_000
+  const status = isSyncing
+    ? `${spinner(s.now)} syncing with Claude…`
+    : s.sync.doneAt > 0
+      ? `synced ${clockTime(s.sync.doneAt)}`
+      : 'not synced yet'
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1}>
@@ -325,6 +333,10 @@ function header(s: Snapshot, ui: Ui) {
         <Text dimColor>{'load '}</Text>
         <Text color="suggestion">{spark(s.history, Math.max(10, inner(s) - 16))}</Text>
         <Text dimColor>{` peak ${peak}`}</Text>
+      </Box>
+      <Box flexDirection="row" gap={1} marginTop={1}>
+        <Button key="refresh" hotkey="r" variant="primary" label="↻ Refresh" onPress={() => acts.refresh()} />
+        <Text dimColor>{status}</Text>
       </Box>
     </Box>
   )
@@ -439,7 +451,7 @@ export function dashboard(ui: Ui, s: Snapshot, acts: Handlers) {
 
   return (
     <Box flexDirection="column">
-      {header(s, ui)}
+      {header(s, ui, acts)}
       {s.selected !== '' ? (
         detail(s, ui, acts)
       ) : (

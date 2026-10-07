@@ -6,6 +6,7 @@ import {
   endTask,
   reconcileAgents,
   reconcileTasks,
+  scanTranscript,
   shimmer,
   spark,
   taskCommand,
@@ -89,6 +90,29 @@ describe('model', () => {
     expect(taskCommand({ ...base, detail: 'sleep 9' })).toBe('sleep 9')
     expect(taskCommand({ ...base, label: 'sleep 9' })).toBe('sleep 9')
     expect(taskCommand({ ...base, description: 'nap' })).toBeUndefined()
+  })
+
+  test('scanTranscript recovers running tasks and agent prompts', async () => {
+    const rows = [
+      {
+        role: 'assistant',
+        text: '',
+        toolUses: [
+          { tool: 'Bash', input: { command: 'make all', description: 'build' }, result: { backgroundTaskId: 'b1' } },
+          { tool: 'Bash', input: { command: 'sleep 1' }, result: { backgroundTaskId: 'b2' } },
+          { tool: 'Agent', input: { prompt: 'look around', run_in_background: true }, agentId: 'g1' },
+        ],
+      },
+      {
+        role: 'user',
+        text: '<task-notification><task-id>b2</task-id><status>completed</status></task-notification>',
+        toolUses: [],
+      },
+    ]
+    const found = scanTranscript(rows, 5)
+    expect(found.tasks.map(t => t.id)).toEqual(['b1'])
+    expect(found.tasks[0]).toMatchObject({ command: 'make all', description: 'build', kind: 'shell' })
+    expect(found.spawns.g1).toMatchObject({ prompt: 'look around', background: true })
   })
 
   test('elapsed formats seconds, minutes and hours', async () => {
@@ -214,6 +238,44 @@ describe('dashboard', () => {
     expect(await ui.find({ type: 'Markdown', text: /Find every flaky test/ })).toBeDefined()
     expect(await ui.find({ type: 'Markdown', text: /Found three flaky tests/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'm5' })).toBeDefined()
+  })
+
+  test('Refresh backfills from the transcript and asks Claude for one sync turn', async ($, on) => {
+    const clock = mock.clock(on)
+    await clock.advance(1000)
+    const submitted: string[] = []
+    on('prompt.submit', ($, e) => {
+      submitted.push(e.text)
+
+      return { text: e.text }
+    })
+    on('agent.list', () => ({ value: [] }))
+    on('classic.Stop', () => ({}))
+    on('session.messages', () => ({
+      value: [
+        {
+          role: 'assistant',
+          text: '',
+          toolUses: [
+            {
+              tool: 'Bash',
+              input: { command: 'make all', description: 'build' },
+              result: { backgroundTaskId: 'old1' },
+            },
+          ],
+        },
+      ],
+    }) as never)
+    const ui = await $.ui.mount(paneTarget())
+    await ui.press({ key: 'refresh' })
+    expect(submitted).toHaveLength(1)
+    expect(await ui.find({ key: 'open-task:old1' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /syncing/ })).toBeDefined()
+    await ui.press({ key: 'refresh' })
+    expect(submitted).toHaveLength(1)
+    await clock.advance(500)
+    await $.classic.Stop({ stop_hook_active: false, background_tasks: [], session_crons: [] })
+    expect(await ui.find({ type: 'Text', text: /synced/ })).toBeDefined()
   })
 })
 

@@ -247,3 +247,61 @@ export function taskCommand(t: DashTask): string | undefined {
 
   return t.description === undefined ? (t.detail ?? t.label) : undefined
 }
+
+export type TranscriptRow = {
+  role: string
+  text: string
+  toolUses: { tool: string; input: Record<string, unknown>; result?: unknown; agentId?: string }[]
+}
+
+const str = (v: unknown) => (typeof v === 'string' ? v : undefined)
+
+// Rebuilds tasks launched before the dashboard loaded from the conversation itself.
+// A task with a completion notice is finished and skipped; the rest are candidates
+// that the next Stop event confirms or ends.
+export function scanTranscript(
+  rows: TranscriptRow[],
+  now: number,
+): { tasks: DashTask[]; spawns: Record<string, Partial<DashAgentDetail>> } {
+  const finished = new Set<string>()
+  for (const row of rows) {
+    if (row.role !== 'user') continue
+    for (const m of row.text.matchAll(/<task-id>([^<]+)<\/task-id>[\s\S]*?<status>([^<]+)<\/status>/g)) {
+      if (m[1]) finished.add(m[1])
+    }
+  }
+  const tasks: DashTask[] = []
+  const spawns: Record<string, Partial<DashAgentDetail>> = {}
+  for (const row of rows) {
+    for (const use of row.toolUses) {
+      const out = (use.result ?? {}) as Record<string, unknown>
+      const command = str(use.input.command)
+      const description = str(use.input.description)
+      const shellId = use.tool === 'Bash' ? str(out.backgroundTaskId) : undefined
+      const monitorId = use.tool === 'Monitor' ? str(out.taskId) : undefined
+      const id = shellId ?? monitorId
+      if (id !== undefined && !finished.has(id)) {
+        tasks.push({
+          id,
+          kind: shellId === undefined ? 'monitor' : 'shell',
+          label: description ?? command ?? id,
+          detail: description ? command : undefined,
+          command,
+          description,
+          status: 'running',
+          startedAt: now,
+        })
+      }
+      const prompt = str(use.input.prompt)
+      if (use.tool === 'Agent' && use.agentId !== undefined && prompt !== undefined) {
+        spawns[use.agentId] = {
+          prompt: clip(prompt, 6000),
+          model: str(use.input.model),
+          background: use.input.run_in_background === true,
+        }
+      }
+    }
+  }
+
+  return { tasks, spawns }
+}

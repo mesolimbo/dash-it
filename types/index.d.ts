@@ -50,6 +50,7 @@ declare module 'claude-code' {
       now: number
       history: number[]
       selected: string
+      sync: { requestedAt: number; doneAt: number }
       spawns: Record<string, DashAgentDetail>
     }
   }

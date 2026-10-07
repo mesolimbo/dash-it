@@ -12,6 +12,7 @@ import {
   reconcileAgents,
   reconcileTasks,
   sameCrons,
+  scanTranscript,
 } from './model'
 import type { InFlight, Note } from './model'
 
@@ -26,6 +27,9 @@ const now = atom({ plugin: 'dash-it', key: 'now' } as const, 0)
 const history = atom({ plugin: 'dash-it', key: 'history' } as const, [])
 const selected = atom({ plugin: 'dash-it', key: 'selected' } as const, '')
 const spawns = atom({ plugin: 'dash-it', key: 'spawns' } as const, {})
+const sync = atom({ plugin: 'dash-it', key: 'sync' } as const, { requestedAt: 0, doneAt: 0 })
+const SYNC_PROMPT = 'dash-it sync: reply with only "ok".'
+const SYNC_WAIT_MS = 30_000
 const TICK_MS = 250
 let ticks = 0
 
@@ -45,6 +49,31 @@ async function refresh($: EngineInterface) {
   await touch($)
 }
 
+// Free: rebuilds what the conversation already shows and polls the agent list.
+async function backfill($: EngineInterface) {
+  const at = await $.clock.now()
+  const found = scanTranscript(await $.session.messages(), at)
+  await update($, tasks, list => found.tasks.reduce(addTask, list))
+  await update($, spawns, all =>
+    Object.entries(found.spawns).reduce(
+      (acc, [id, patch]) => (acc[id]?.prompt ? acc : mergeSpawn(acc, id, patch)),
+      all,
+    ),
+  )
+  await refresh($)
+}
+
+// Costs one short turn: its Stop event carries the engine's real in-flight list.
+async function requestSync($: EngineInterface) {
+  const at = await $.clock.now()
+  const cur = await read($, sync)
+  await backfill($)
+  const isWaiting = cur.requestedAt > cur.doneAt && at - cur.requestedAt < SYNC_WAIT_MS
+  if (isWaiting) return
+  await update($, sync, s => ({ ...s, requestedAt: at }))
+  void $.prompt.submit({ text: SYNC_PROMPT }).catch(() => undefined)
+}
+
 async function liveCount($: EngineInterface) {
   const running = (await read($, tasks)).filter(t => t.status === 'running').length
 
@@ -53,7 +82,9 @@ async function liveCount($: EngineInterface) {
 
 // Moves the clock the pane animates from, only while something is running.
 async function touch($: EngineInterface) {
-  if ((await liveCount($)) === 0) return
+  const wait = await read($, sync)
+  const isWaiting = wait.requestedAt > wait.doneAt
+  if ((await liveCount($)) === 0 && !isWaiting) return
   const at = await $.clock.now()
   await update($, now, () => at)
 }
@@ -115,7 +146,12 @@ export const register: Register = on => {
 
       return { text: 'Dashboard closed.' }
     }
-    await refresh($)
+    if (e.args.trim() === 'refresh') {
+      await requestSync($)
+
+      return { text: 'Refreshing: asked Claude for a short turn to sync background tasks.' }
+    }
+    await backfill($)
     await $.ui.open({ id: PANE, title: 'Dashboard', rows: 40, columns: 84 })
 
     return { text: 'Dashboard opened. Run /dash-it close to close it.' }
@@ -204,6 +240,8 @@ export const register: Register = on => {
 
   on('classic.Stop', async ($, e, next) => {
     await syncInFlight($, e.background_tasks, e.session_crons)
+    const at = await $.clock.now()
+    await update($, sync, s => ({ ...s, doneAt: at }))
 
     return next(e)
   })
@@ -231,6 +269,7 @@ export const register: Register = on => {
       history: await read($, history),
       selected: await read($, selected),
       spawns: await read($, spawns),
+      sync: await read($, sync),
       width: e.props.bodyColumns,
     }
 
@@ -241,6 +280,8 @@ export const register: Register = on => {
 
     const select = (ref: string) => update($, selected, () => ref)
 
-    return dashboard(ui, snapshot, { toggle, select })
+    const refreshNow = () => requestSync($)
+
+    return dashboard(ui, snapshot, { toggle, select, refresh: refreshNow })
   })
 }
