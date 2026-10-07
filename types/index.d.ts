@@ -6,6 +6,8 @@ export type DashTask = {
   status: 'running' | 'ended' | 'killed'
   startedAt: number
   endedAt?: number
+  command?: string
+  description?: string
 }
 
 export type DashAgent = {
@@ -26,7 +28,16 @@ export type DashCron = {
   prompt: string
 }
 
-export type DashFeedItem = { at: number; text: string }
+export type DashFeedItem = { at: number; text: string; ref?: string }
+
+export type DashAgentDetail = {
+  prompt: string
+  model?: string
+  background: boolean
+  tools: number
+  lastTool?: string
+  result?: string
+}
 
 declare module 'claude-code' {
   interface PluginState {
@@ -38,6 +49,8 @@ declare module 'claude-code' {
       collapsed: string[]
       now: number
       history: number[]
+      selected: string
+      spawns: Record<string, DashAgentDetail>
     }
   }
 }

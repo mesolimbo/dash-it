@@ -4,14 +4,16 @@ import type { EngineInterface, Register } from 'claude-code'
 import { dashboard } from './dashboard'
 import {
   addTask,
+  clip,
   endTask,
   isAgentLive,
+  mergeSpawn,
   pushFeed,
   reconcileAgents,
   reconcileTasks,
   sameCrons,
 } from './model'
-import type { InFlight } from './model'
+import type { InFlight, Note } from './model'
 
 const PANE = 'dash-it'
 
@@ -22,13 +24,15 @@ const feed = atom({ plugin: 'dash-it', key: 'feed' } as const, [])
 const collapsed = atom({ plugin: 'dash-it', key: 'collapsed' } as const, [])
 const now = atom({ plugin: 'dash-it', key: 'now' } as const, 0)
 const history = atom({ plugin: 'dash-it', key: 'history' } as const, [])
+const selected = atom({ plugin: 'dash-it', key: 'selected' } as const, '')
+const spawns = atom({ plugin: 'dash-it', key: 'spawns' } as const, {})
 const TICK_MS = 250
 let ticks = 0
 
-async function note($: EngineInterface, texts: string[]) {
-  if (texts.length === 0) return
+async function note($: EngineInterface, notes: Note[]) {
+  if (notes.length === 0) return
   const at = await $.clock.now()
-  await update($, feed, list => pushFeed(list, texts, at))
+  await update($, feed, list => pushFeed(list, notes, at))
 }
 
 async function refresh($: EngineInterface) {
@@ -82,8 +86,8 @@ async function syncInFlight(
   )
   await update($, tasks, () => after)
   await note($, [
-    ...started.map(t => `${t.kind} started: ${t.label}`),
-    ...ended.map(t => `${t.kind} finished: ${t.label}`),
+    ...started.map(t => ({ text: `${t.kind} started: ${t.label}`, ref: `task:${t.id}` })),
+    ...ended.map(t => ({ text: `${t.kind} finished: ${t.label}`, ref: `task:${t.id}` })),
   ])
   if (schedules !== undefined && !sameCrons(await read($, crons), schedules)) {
     await update($, crons, () => schedules)
@@ -129,11 +133,13 @@ export const register: Register = on => {
           kind: 'shell',
           label,
           detail: e.description ? e.command : undefined,
+          command: e.command,
+          description: e.description,
           status: 'running',
           startedAt: at,
         }),
       )
-      await note($, [`shell started: ${label}`])
+      await note($, [{ text: `shell started: ${label}`, ref: `task:${out.backgroundTaskId}` }])
     }
 
     return ran
@@ -150,11 +156,13 @@ export const register: Register = on => {
           kind: 'monitor',
           label: e.description,
           detail: e.command,
+          command: e.command,
+          description: e.description,
           status: 'running',
           startedAt: at,
         }),
       )
-      await note($, [`monitor started: ${e.description}`])
+      await note($, [{ text: `monitor started: ${e.description}`, ref: `task:${out.taskId}` }])
     }
 
     return ran
@@ -171,6 +179,29 @@ export const register: Register = on => {
     return ran
   })
 
+  on('tool.call', async ($, e, next) => {
+    const id = e.agentId
+    if (id !== undefined) {
+      const tool = String(e.tool)
+      await update($, spawns, all => mergeSpawn(all, id, { lastTool: tool }, 1))
+    }
+
+    return next(e)
+  })
+
+  on('agent.spawn', async ($, e, next) => {
+    const out = await next(e)
+    const id = (out as { agentId?: string }).agentId
+    if (id !== undefined) {
+      const model = (out as { model?: string }).model
+      await update($, spawns, all =>
+        mergeSpawn(all, id, { prompt: clip(e.prompt, 6000), model, background: e.background }),
+      )
+    }
+
+    return out
+  })
+
   on('classic.Stop', async ($, e, next) => {
     await syncInFlight($, e.background_tasks, e.session_crons)
 
@@ -178,6 +209,10 @@ export const register: Register = on => {
   })
 
   on('classic.SubagentStop', async ($, e, next) => {
+    const report = e.last_assistant_message
+    if (report) {
+      await update($, spawns, all => mergeSpawn(all, e.agent_id, { result: clip(report, 6000) }))
+    }
     await syncInFlight($, e.background_tasks, e.session_crons)
     await refresh($)
 
@@ -194,6 +229,8 @@ export const register: Register = on => {
       collapsed: await read($, collapsed),
       now: await read($, now),
       history: await read($, history),
+      selected: await read($, selected),
+      spawns: await read($, spawns),
       width: e.props.bodyColumns,
     }
 
@@ -202,6 +239,8 @@ export const register: Register = on => {
         list.includes(id) ? list.filter(one => one !== id) : [...list, id],
       )
 
-    return dashboard(ui, snapshot, toggle)
+    const select = (ref: string) => update($, selected, () => ref)
+
+    return dashboard(ui, snapshot, { toggle, select })
   })
 }

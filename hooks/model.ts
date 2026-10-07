@@ -1,4 +1,4 @@
-import type { DashAgent, DashCron, DashFeedItem, DashTask } from '../types'
+import type { DashAgent, DashAgentDetail, DashCron, DashFeedItem, DashTask } from '../types'
 
 export type InFlight = {
   id: string
@@ -30,8 +30,20 @@ const trimEnded = <T extends { endedAt?: number }>(list: T[]): T[] => {
   return list.filter(one => one.endedAt === undefined || ended.includes(one))
 }
 
+export type Note = { text: string; ref?: string }
+
 export function addTask(list: DashTask[], task: DashTask): DashTask[] {
-  if (list.some(one => one.id === task.id)) return list
+  if (list.some(one => one.id === task.id)) {
+    return list.map(one =>
+      one.id === task.id
+        ? {
+            ...one,
+            command: task.command ?? one.command,
+            description: task.description ?? one.description,
+          }
+        : one,
+    )
+  }
 
   return trimEnded([...list, task])
 }
@@ -71,6 +83,8 @@ export function reconcileTasks(
       kind: one.type,
       label: one.command ?? one.description,
       detail: one.command ? one.description : (one.name ?? one.server),
+      command: one.command,
+      description: one.description,
       status: 'running',
       startedAt: now,
     })
@@ -83,23 +97,24 @@ export function reconcileAgents(
   prev: DashAgent[],
   seen: AgentSeen[],
   now: number,
-): [DashAgent[], string[]] {
-  const notes: string[] = []
+): [DashAgent[], Note[]] {
+  const notes: Note[] = []
   const byId = new Map(seen.map(one => [one.id, one]))
   const known = new Set(prev.map(one => one.id))
   const next: DashAgent[] = prev.map(one => {
     const cur = byId.get(one.id)
     if (cur === undefined) {
       if (one.endedAt !== undefined) return one
-      notes.push(`agent ended: ${one.name || one.type}`)
+      notes.push({ text: `agent ended: ${one.name || one.type}`, ref: `agent:${one.id}` })
 
       return { ...one, status: 'ended', endedAt: now }
     }
     const wasLive = isAgentLive(one)
     const live = isAgentLive(cur)
     const who = cur.name || one.name || cur.type
-    if (wasLive && !live) notes.push(`agent ${cur.status}: ${who}`)
-    if (!wasLive && live) notes.push(`agent resumed: ${who}`)
+    const ref = `agent:${one.id}`
+    if (wasLive && !live) notes.push({ text: `agent ${cur.status}: ${who}`, ref })
+    if (!wasLive && live) notes.push({ text: `agent resumed: ${who}`, ref })
 
     return {
       ...one,
@@ -113,7 +128,7 @@ export function reconcileAgents(
   })
   for (const one of seen) {
     if (known.has(one.id)) continue
-    notes.push(`agent started: ${one.name || one.type}`)
+    notes.push({ text: `agent started: ${one.name || one.type}`, ref: `agent:${one.id}` })
     next.push({
       id: one.id,
       name: one.name ?? '',
@@ -133,14 +148,33 @@ export function sameCrons(a: DashCron[], b: DashCron[]): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
 }
 
-export function pushFeed(
-  feed: DashFeedItem[],
-  texts: string[],
-  now: number,
-): DashFeedItem[] {
-  if (texts.length === 0) return feed
+export function pushFeed(feed: DashFeedItem[], notes: Note[], now: number): DashFeedItem[] {
+  if (notes.length === 0) return feed
 
-  return [...feed, ...texts.map(text => ({ at: now, text }))].slice(-KEEP_FEED)
+  return [...feed, ...notes.map(n => ({ at: now, text: n.text, ref: n.ref }))].slice(-KEEP_FEED)
+}
+
+const KEEP_SPAWNS = 60
+const BLANK: DashAgentDetail = { prompt: '', background: false, tools: 0 }
+
+// The spawn hook, the per-agent tool tally and the stop report each fill part of one record.
+export function mergeSpawn(
+  all: Record<string, DashAgentDetail>,
+  id: string,
+  patch: Partial<DashAgentDetail>,
+  bump = 0,
+): Record<string, DashAgentDetail> {
+  const cur = all[id] ?? BLANK
+  const next = { ...all, [id]: { ...cur, ...patch, tools: cur.tools + bump } }
+  const keys = Object.keys(next)
+
+  return keys.length <= KEEP_SPAWNS
+    ? next
+    : Object.fromEntries(keys.slice(-KEEP_SPAWNS).map(k => [k, next[k] as DashAgentDetail]))
+}
+
+export function clip(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max)}\n… ${text.length - max} more characters`
 }
 
 export function elapsed(ms: number): string {

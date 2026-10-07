@@ -1,7 +1,8 @@
 import type { Elements } from 'claude-code'
 
-import type { DashAgent, DashCron, DashFeedItem, DashTask } from '../types'
+import type { DashAgent, DashAgentDetail, DashCron, DashFeedItem, DashTask } from '../types'
 import {
+  clip,
   clockTime,
   elapsed,
   isAgentLive,
@@ -20,11 +21,18 @@ export type Snapshot = {
   feed: DashFeedItem[]
   collapsed: string[]
   history: number[]
+  selected: string
+  spawns: Record<string, DashAgentDetail>
   now: number
   width: number
 }
 
-type Ui = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button'>
+type Ui = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button' | 'Code' | 'Markdown'>
+
+export type Handlers = {
+  toggle: (id: string) => void
+  select: (ref: string) => void
+}
 
 // A widget is one titled card: add an entry to WIDGETS and it shows up.
 // `count` is the badge on its header, `render` draws its body from the snapshot.
@@ -33,7 +41,7 @@ export type Widget = {
   title: string
   accent: string
   count: (s: Snapshot) => number
-  render: (s: Snapshot, ui: Ui) => JSX.Element
+  render: (s: Snapshot, ui: Ui, acts: Handlers) => JSX.Element
 }
 
 type Item = {
@@ -43,6 +51,7 @@ type Item = {
   status: string
   startedAt: number
   endedAt?: number
+  ref: string
 }
 
 const BAR = 8
@@ -61,6 +70,7 @@ const items = (s: Snapshot): Item[] => [
     status: t.status,
     startedAt: t.startedAt,
     endedAt: t.endedAt,
+    ref: `task:${t.id}`,
   })),
   ...s.agents.map(a => ({
     id: a.id,
@@ -69,6 +79,7 @@ const items = (s: Snapshot): Item[] => [
     status: a.status,
     startedAt: a.startedAt,
     endedAt: a.endedAt,
+    ref: `agent:${a.id}`,
   })),
 ]
 
@@ -79,10 +90,12 @@ const empty = (ui: Ui, text: string) => <ui.Text dimColor>{text}</ui.Text>
 function workRow(
   ui: Ui,
   s: Snapshot,
+  acts: Handlers,
   one: { id: string; status: string; startedAt: number; endedAt?: number },
   title: string,
+  ref: string,
 ) {
-  const { Box, Text } = ui
+  const { Box, Text, Button } = ui
   const live = isLive(one.status)
   const solid = '▰'.repeat(BAR)
 
@@ -90,7 +103,13 @@ function workRow(
     <Box flexDirection="row">
       <Text color={tone(one.status)}>{icon(one.status, s.now)}</Text>
       <Text> </Text>
-      <Text dimColor={!live}>{pad(title, inner(s) - 4 - BAR - TIME)}</Text>
+      <Button
+        plain
+        dimColor={!live}
+        key={`open-${ref}`}
+        label={pad(title, inner(s) - 4 - BAR - TIME)}
+        onPress={() => acts.select(ref)}
+      />
       <Text> </Text>
       <Text color={tone(one.status)} dimColor={!live}>
         {live ? shimmer(s.now, BAR) : solid}
@@ -101,8 +120,8 @@ function workRow(
   )
 }
 
-function timeline(s: Snapshot, ui: Ui) {
-  const { Box, Text } = ui
+function timeline(s: Snapshot, ui: Ui, acts: Handlers) {
+  const { Box, Text, Button } = ui
   const all = items(s)
   if (all.length === 0) return empty(ui, 'Nothing has run yet. Launch a shell or subagent.')
   const label = 16
@@ -130,7 +149,12 @@ function timeline(s: Snapshot, ui: Ui) {
           <Box flexDirection="row">
             <Text color={tone(one.status)}>{icon(one.status, s.now)}</Text>
             <Text> </Text>
-            <Text>{pad(one.name, label)}</Text>
+            <Button
+              plain
+              key={`tl-${one.ref}`}
+              label={pad(one.name, label)}
+              onPress={() => acts.select(one.ref)}
+            />
             <Text> </Text>
             <Text dimColor>{'·'.repeat(bar.before)}</Text>
             <Text color={tone(one.status)} dimColor={!live}>
@@ -165,7 +189,7 @@ export const WIDGETS: Widget[] = [
     title: 'Background tasks',
     accent: 'success',
     count: s => s.tasks.filter(t => t.status === 'running').length,
-    render: (s, ui) => (
+    render: (s, ui, acts) => (
       <ui.Box flexDirection="column">
         {s.tasks.length === 0 && empty(ui, 'No background shells or monitors.')}
         {[...s.tasks]
@@ -174,8 +198,10 @@ export const WIDGETS: Widget[] = [
             workRow(
               ui,
               s,
+              acts,
               one,
               `${one.kind}: ${one.label}${one.detail ? ` · ${one.detail}` : ''}`,
+              `task:${one.id}`,
             ),
           )}
       </ui.Box>
@@ -186,12 +212,21 @@ export const WIDGETS: Widget[] = [
     title: 'Subagents',
     accent: 'permission',
     count: s => s.agents.filter(isAgentLive).length,
-    render: (s, ui) => (
+    render: (s, ui, acts) => (
       <ui.Box flexDirection="column">
         {s.agents.length === 0 && empty(ui, 'No subagents yet.')}
         {[...s.agents]
           .reverse()
-          .map(one => workRow(ui, s, one, `${one.name || one.type}: ${one.description}`))}
+          .map(one =>
+            workRow(
+              ui,
+              s,
+              acts,
+              one,
+              `${one.name || one.type}: ${one.description}`,
+              `agent:${one.id}`,
+            ),
+          )}
       </ui.Box>
     ),
   },
@@ -220,18 +255,33 @@ export const WIDGETS: Widget[] = [
     title: 'Activity',
     accent: 'suggestion',
     count: s => s.feed.length,
-    render: (s, ui) => (
+    render: (s, ui, acts) => (
       <ui.Box flexDirection="column">
         {s.feed.length === 0 && empty(ui, 'Nothing yet.')}
-        {[...s.feed]
+        {s.feed
+          .map((one, i) => ({ one, i }))
           .reverse()
           .slice(0, 10)
-          .map(one => (
-            <ui.Box flexDirection="row" gap={1}>
-              <ui.Text dimColor>{clockTime(one.at)}</ui.Text>
-              <ui.Text color={feedTone(one.text)}>{truncate(one.text, inner(s) - 10)}</ui.Text>
-            </ui.Box>
-          ))}
+          .map(({ one, i }) => {
+            const ref = one.ref
+            const text = truncate(one.text, inner(s) - 10)
+
+            return (
+              <ui.Box flexDirection="row" gap={1}>
+                <ui.Text dimColor>{clockTime(one.at)}</ui.Text>
+                {ref === undefined ? (
+                  <ui.Text color={feedTone(one.text)}>{text}</ui.Text>
+                ) : (
+                  <ui.Button
+                    plain
+                    key={`feed-${i}`}
+                    label={text}
+                    onPress={() => acts.select(ref)}
+                  />
+                )}
+              </ui.Box>
+            )
+          })}
       </ui.Box>
     ),
   },
@@ -279,35 +329,139 @@ function header(s: Snapshot, ui: Ui) {
   )
 }
 
-export function dashboard(ui: Ui, s: Snapshot, onToggle: (id: string) => void) {
+const fmt = (at: number) => clockTime(at)
+
+function field(ui: Ui, label: string, value: string, color?: string) {
+  return (
+    <ui.Box flexDirection="row">
+      <ui.Text dimColor>{label.padEnd(10)}</ui.Text>
+      <ui.Text color={color}>{value}</ui.Text>
+    </ui.Box>
+  )
+}
+
+const heading = (ui: Ui, text: string, accent: string) => (
+  <ui.Box marginTop={1}>
+    <ui.Text bold color={accent}>{text}</ui.Text>
+  </ui.Box>
+)
+
+function frame(ui: Ui, s: Snapshot, acts: Handlers, accent: string, title: string, body: JSX.Element[]) {
+  const { Box, Text, Button } = ui
+
+  return (
+    <Box flexDirection="column">
+      <Box flexDirection="row" gap={1}>
+        <Button key="back" hotkey="b" variant="primary" label="← Back" onPress={() => acts.select('')} />
+        <Text dimColor>to the dashboard</Text>
+      </Box>
+      <Box flexDirection="column" borderStyle="round" borderColor={accent} paddingX={1}>
+        <Text bold color={accent}>{truncate(title, inner(s))}</Text>
+        {body}
+      </Box>
+    </Box>
+  )
+}
+
+function taskDetail(s: Snapshot, ui: Ui, acts: Handlers, t: DashTask) {
+  const end = t.endedAt ?? s.now
+  const command = t.command ?? t.label
+
+  return frame(ui, s, acts, 'success', `${icon(t.status, s.now)} ${t.kind}: ${t.label}`, [
+    heading(ui, 'Overview', 'success'),
+    field(ui, 'Status', t.status, tone(t.status)),
+    field(ui, 'Kind', t.kind),
+    field(ui, 'Task id', t.id),
+    field(ui, 'Started', fmt(t.startedAt)),
+    ...(t.endedAt === undefined ? [] : [field(ui, 'Ended', fmt(t.endedAt))]),
+    field(ui, 'Duration', elapsed(end - t.startedAt)),
+    ...(t.description && t.description !== command
+      ? [heading(ui, 'Why (description)', 'success'), <ui.Text>{t.description}</ui.Text>]
+      : []),
+    heading(ui, t.kind === 'shell' ? 'Command' : 'Script', 'success'),
+    <ui.Code source={clip(command, 6000)} language="bash" wrap="wrap" />,
+  ])
+}
+
+function agentDetail(s: Snapshot, ui: Ui, acts: Handlers, a: DashAgent) {
+  const info = s.spawns[a.id]
+  const parent = s.agents.find(one => one.id === a.parentId)
+  const end = a.endedAt ?? s.now
+
+  return frame(ui, s, acts, 'permission', `${icon(a.status, s.now)} ${a.name || a.type}`, [
+    heading(ui, 'Overview', 'permission'),
+    field(ui, 'Status', a.status, tone(a.status)),
+    field(ui, 'Type', a.type),
+    field(ui, 'Agent id', a.id),
+    field(ui, 'Model', info?.model ?? 'unknown'),
+    field(ui, 'Mode', info === undefined ? 'unknown' : info.background ? 'background' : 'foreground'),
+    field(ui, 'Parent', a.parentId === undefined ? 'main session' : parent ? parent.name || parent.type : a.parentId),
+    field(ui, 'Started', fmt(a.startedAt)),
+    field(ui, 'Duration', elapsed(end - a.startedAt)),
+    field(ui, 'Tool calls', info === undefined ? '0' : `${info.tools}${info.lastTool ? ` (last: ${info.lastTool})` : ''}`),
+    heading(ui, 'Task', 'permission'),
+    <ui.Text>{a.description || 'No description.'}</ui.Text>,
+    heading(ui, 'Prompt (why it ran)', 'permission'),
+    info?.prompt ? (
+      <ui.Markdown text={info.prompt} />
+    ) : (
+      <ui.Text dimColor>Not captured: it started before the dashboard was loaded.</ui.Text>
+    ),
+    heading(ui, 'Final report', 'permission'),
+    info?.result ? (
+      <ui.Markdown text={info.result} />
+    ) : (
+      <ui.Text dimColor>{isLive(a.status) ? 'Still working…' : 'No report captured.'}</ui.Text>
+    ),
+  ])
+}
+
+function detail(s: Snapshot, ui: Ui, acts: Handlers) {
+  const [kind, ...rest] = s.selected.split(':')
+  const id = rest.join(':')
+  const task = kind === 'task' ? s.tasks.find(t => t.id === id) : undefined
+  const agent = kind === 'agent' ? s.agents.find(a => a.id === id) : undefined
+  if (task) return taskDetail(s, ui, acts, task)
+  if (agent) return agentDetail(s, ui, acts, agent)
+
+  return frame(ui, s, acts, 'subtle', 'Not tracked', [
+    <ui.Text dimColor>This item is no longer in the dashboard's history.</ui.Text>,
+  ])
+}
+
+export function dashboard(ui: Ui, s: Snapshot, acts: Handlers) {
   const { Box, Text, Button } = ui
 
   return (
     <Box flexDirection="column">
       {header(s, ui)}
-      {WIDGETS.map(w => {
-        const isOpen = !s.collapsed.includes(w.id)
+      {s.selected !== '' ? (
+        detail(s, ui, acts)
+      ) : (
+        WIDGETS.map(w => {
+          const isOpen = !s.collapsed.includes(w.id)
 
-        return (
-          <Box
-            flexDirection="column"
-            borderStyle="round"
-            borderColor={isOpen ? w.accent : 'subtle'}
-            paddingX={1}
-          >
-            <Box flexDirection="row" gap={1}>
-              <Button
-                plain
-                key={`toggle-${w.id}`}
-                label={`${isOpen ? '▾' : '▸'} ${w.title}`}
-                onPress={() => onToggle(w.id)}
-              />
-              <Text dimColor>{`(${w.count(s)})`}</Text>
+          return (
+            <Box
+              flexDirection="column"
+              borderStyle="round"
+              borderColor={isOpen ? w.accent : 'subtle'}
+              paddingX={1}
+            >
+              <Box flexDirection="row" gap={1}>
+                <Button
+                  plain
+                  key={`toggle-${w.id}`}
+                  label={`${isOpen ? '▾' : '▸'} ${w.title}`}
+                  onPress={() => acts.toggle(w.id)}
+                />
+                <Text dimColor>{`(${w.count(s)})`}</Text>
+              </Box>
+              {isOpen && w.render(s, ui, acts)}
             </Box>
-            {isOpen && w.render(s, ui)}
-          </Box>
-        )
-      })}
+          )
+        })
+      )}
     </Box>
   )
 }
