@@ -122,6 +122,8 @@ describe('dashboard', () => {
     expect(await ui.find({ key: 'open-task:b1' })).toBeUndefined()
     await ui.press({ key: 'toggle-shells' })
     expect(await ui.find({ key: 'open-task:b1' })).toBeDefined()
+    await ui.press({ key: 'feed-0' })
+    expect(await ui.find({ type: 'Code', text: /npm test/ })).toBeDefined()
   })
 
   test('a background Bash call lands on the pane and TaskStop kills it', async ($, on) => {
