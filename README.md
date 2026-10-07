@@ -10,7 +10,7 @@ Widgets: timeline, background tasks, subagents, scheduled, activity. Add one by 
 /plugin install dash-it --marketplace mesolimbo/dash-it
 ```
 
-Answer `y` to add the marketplace, then choose the user scope to load it in every session. The repo is private, so `gh auth login` (or an SSH key) must work on the machine. Update with `claude plugin update dash-it@dash-it`.
+Answer `y` to add the marketplace, then choose the user scope to load it in every session. Update with `claude plugin update dash-it@dash-it`.
 
 ## Check
 
