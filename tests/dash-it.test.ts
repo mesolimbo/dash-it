@@ -8,6 +8,7 @@ import {
   reconcileTasks,
   shimmer,
   spark,
+  taskCommand,
   timelineBar,
   truncate,
 } from '../hooks/model'
@@ -80,6 +81,14 @@ describe('model', () => {
     const bar = timelineBar(0, 100, 0, 100, 20)
     expect(bar.before + bar.run + bar.after).toBe(20)
     expect(timelineBar(99, 100, 0, 100, 20).run).toBeGreaterThan(0)
+  })
+
+  test('taskCommand finds the command on new and older records', async () => {
+    const base = { id: 't', kind: 'shell', label: 'nap', status: 'running' as const, startedAt: 0 }
+    expect(taskCommand({ ...base, command: 'sleep 9', description: 'nap' })).toBe('sleep 9')
+    expect(taskCommand({ ...base, detail: 'sleep 9' })).toBe('sleep 9')
+    expect(taskCommand({ ...base, label: 'sleep 9' })).toBe('sleep 9')
+    expect(taskCommand({ ...base, description: 'nap' })).toBeUndefined()
   })
 
   test('elapsed formats seconds, minutes and hours', async () => {

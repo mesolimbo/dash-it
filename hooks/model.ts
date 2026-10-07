@@ -240,3 +240,10 @@ export function timelineBar(
 
   return { before: from, run: to - from, after: cells - to }
 }
+
+// Records saved before commands were stored kept the command as `detail` (or as `label`).
+export function taskCommand(t: DashTask): string | undefined {
+  if (t.command !== undefined) return t.command
+
+  return t.description === undefined ? (t.detail ?? t.label) : undefined
+}

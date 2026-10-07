@@ -10,6 +10,7 @@ import {
   shimmer,
   spark,
   spinner,
+  taskCommand,
   timelineBar,
   truncate,
 } from './model'
@@ -365,7 +366,7 @@ function frame(ui: Ui, s: Snapshot, acts: Handlers, accent: string, title: strin
 
 function taskDetail(s: Snapshot, ui: Ui, acts: Handlers, t: DashTask) {
   const end = t.endedAt ?? s.now
-  const command = t.command ?? t.label
+  const command = taskCommand(t)
 
   return frame(ui, s, acts, 'success', `${icon(t.status, s.now)} ${t.kind}: ${t.label}`, [
     heading(ui, 'Overview', 'success'),
@@ -379,7 +380,11 @@ function taskDetail(s: Snapshot, ui: Ui, acts: Handlers, t: DashTask) {
       ? [heading(ui, 'Why (description)', 'success'), <ui.Text>{t.description}</ui.Text>]
       : []),
     heading(ui, t.kind === 'shell' ? 'Command' : 'Script', 'success'),
-    <ui.Code source={clip(command, 6000)} language="bash" wrap="wrap" />,
+    command === undefined ? (
+      <ui.Text dimColor>Not captured: the engine did not report this task's command.</ui.Text>
+    ) : (
+      <ui.Code source={clip(command, 6000)} language="bash" wrap="wrap" />
+    ),
   ])
 }
 
