@@ -152,9 +152,13 @@ export const register: Register = on => {
       return { text: 'Refreshing: asked Claude for a short turn to sync background tasks.' }
     }
     await backfill($)
-    await $.ui.open({ id: PANE, title: 'Dashboard', rows: 40, columns: 84 })
+    const opened = await $.ui.open({ id: PANE, title: 'Dashboard', rows: 40, columns: 84 })
+    if (!opened.isPlaced) return { text: `Dashboard is open but not drawn: ${opened.reason}` }
+    const where = e.presentation.isFullscreen && e.presentation.columns >= 110
+      ? 'docked to the right of the transcript'
+      : 'above the prompt (the docked layout needs fullscreen and 110+ columns)'
 
-    return { text: 'Dashboard opened. Run /dash-it close to close it.' }
+    return { text: `Dashboard opened ${where}. Run /dash-it close to close it.` }
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {

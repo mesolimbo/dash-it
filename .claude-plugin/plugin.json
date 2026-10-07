@@ -1,6 +1,6 @@
 {
   "name": "dash-it",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "/dash-it opens a widget dashboard of background shells, subagents, monitors and schedules the session runs out of sight.",
   "types": "./types/index.d.ts",
   "author": {
